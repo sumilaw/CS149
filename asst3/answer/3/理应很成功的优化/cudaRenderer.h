@@ -29,7 +29,7 @@ private:
 
     int* cudaDeviceElementInPiece;
     int* cudaDeviceElementInPieceCurrent;
-    int* cudaDevicePrefixSum;
+    int* cudaDeviceNewMemoryToPiece;
     int numPieceWidth;
     int numPieceHeight;
     int widthPerPiece;

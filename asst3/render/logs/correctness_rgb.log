@@ -1,0 +1,54 @@
+Rendering to 1024x1024 image
+Rendering to 1024x1024 image
+Loaded scene with 3 circles
+Loaded scene with 3 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 4060 Laptop GPU
+   SMs:        24
+   Global mem: 8188 MB
+   CUDA Cap:   8.9
+---------------------------------------------------------
+widthPerPiece: 32, heightPerPiece: 32
+
+Running benchmark, 1 frames, beginning at frame 0 ...
+Dumping frames to output_xxx.ppm
+---------------------------------------------
+CudaRenderer::render start
+numCircles: 3 
+图片将分成 32 * 32 块
+每块包含 32 * 32 个像素点
+---------------------------------------------
+求每个块与之对应的圆的数量(numCircleInPiece)
+gridDimCircle: 1, blockDimCircle: 256
+numCirclePiece final, run time: 0.197 ms
+---------------------------------------------
+申请新空间(mallocNewMemory)
+newMemorySize: 988
+mallocNewMemory final, run time: 0.330 ms
+---------------------------------------------
+将圆的ID添加至新申请的空间(addIndexToNewMemory)
+gridDimCircle: 1, blockDimCircle: 256
+addIndexToNewMemory final, run time: 0.123 ms
+---------------------------------------------
+每个块对圆id排序(sortPerPiece)
+gridDimPiece: 4, blockDimPiece: 256
+sortPerPiece final, run time: 0.034 ms
+---------------------------------------------
+开始像素并行计算
+gridDimPixel.x: 128, blockDimPixel.x: 8
+gridDimPixel.y: 128, blockDimPixel.y: 8
+kernelRenderPixel final, run time: 0.071 ms
+---------------------------------------------
+Copying image data from device
+Wrote image file output_0000.ppm
+Copying image data from device
+***************** Correctness check passed **************************
+Clear:    0.3629 ms
+Advance:  0.0004 ms
+Render:   2.7540 ms
+Total:    3.1173 ms
+File IO:  1396.2666 ms
+
+Overall:  1.4084 sec (note units are seconds)

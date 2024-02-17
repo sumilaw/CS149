@@ -141,6 +141,7 @@ int main(int argc, char** argv)
     printf("Rendering to %dx%d image\n", imageSize, imageSize);
 
     CircleRenderer* renderer;
+    printf("Rendering to %dx%d image\n", imageSize, imageSize);
 
     if (checkCorrectness) {
         // Need both the renderers

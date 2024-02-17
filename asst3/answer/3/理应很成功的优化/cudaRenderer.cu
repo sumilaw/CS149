@@ -16,8 +16,8 @@
 #include "util.h"
 #include "CycleTimer.h"
 
-#define NUM_PIECE_WIDTH 32
-#define NUM_PIECE_HEIGHT 32
+#define NUM_PIECE_WIDTH 64
+#define NUM_PIECE_HEIGHT 64
 #define THREADS_PER_BLOCK 256
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -41,7 +41,7 @@ struct GlobalConstants {
     // 分块
     int* numElementInPiece;
     int* numElementInPieceCurrent;
-    int* prefixSum;
+    // int** newMemoryToPiece;
     int numPieceWidth;
     int numPieceHeight;
     int widthPerPiece;
@@ -460,7 +460,7 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
     cudaDeviceElementInPiece = NULL;
-    cudaDevicePrefixSum = NULL;
+    cudaDeviceNewMemoryToPiece = NULL;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -484,6 +484,7 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceImageData);
         cudaFree(cudaDeviceElementInPiece);
         cudaFree(cudaDeviceElementInPieceCurrent);
+        cudaFree(cudaDeviceNewMemoryToPiece);
     }
 }
 
@@ -571,10 +572,9 @@ CudaRenderer::setup() {
     cudaStatus = cudaMalloc((void**)&cudaDeviceElementInPieceCurrent, sizeof(int) * numPieceHeight * numPieceWidth);
     if (cudaStatus != cudaSuccess) 
         fprintf(stderr, "cudaMalloc failed\n");
-    cudaStatus = cudaMalloc((void**)&cudaDevicePrefixSum, sizeof(int) * numPieceHeight * numPieceWidth);
-    if (cudaStatus != cudaSuccess) 
-        fprintf(stderr, "cudaMalloc failed\n");
-
+    // cudaStatus = cudaMalloc((void**)&cudaDeviceNewMemoryToPiece, sizeof(int*) * numPieceHeight * numPieceWidth);
+    // if (cudaStatus != cudaSuccess) 
+    //     fprintf(stderr, "cudaMalloc failed\n");
     cudaMemset(cudaDeviceElementInPiece, 0, sizeof(int) * numPieceHeight * numPieceWidth);
     if (cudaStatus != cudaSuccess) 
         fprintf(stderr, "cudaMemset failed\n");
@@ -602,7 +602,6 @@ CudaRenderer::setup() {
     params.numElementInPiece = cudaDeviceElementInPiece;
     params.numElementInPieceCurrent = cudaDeviceElementInPieceCurrent;
     // params.newMemoryToPiece = cudaDeviceNewMemoryToPiece;
-    params.prefixSum = cudaDevicePrefixSum;
 
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
@@ -790,10 +789,9 @@ static inline int nextPow2(int n) {
     n++;
     return n;
 }
-int exclusive_scan(int* input, int N, int* result)
+int exclusive_scan(int N, int* result)
 {
-    assert(N == nextPow2(N));
-    cudaMemcpy(result, input, N * sizeof(int), cudaMemcpyDeviceToDevice);
+    N = nextPow2(N);
     int threadsPerBlock = THREADS_PER_BLOCK;
     int blocks;
     int res = 0;
@@ -819,7 +817,7 @@ int exclusive_scan(int* input, int N, int* result)
 }
 
 __global__
-void addIndexToNewMemory(int *allIndexs) {
+void addIndexToNewMemory(int *newMemoryToPiece) {
     int index = threadIdx.x + blockDim.x * blockIdx.x;
     if (index >= cuConstRendererParams.numCircles) {
         return;
@@ -853,6 +851,7 @@ void addIndexToNewMemory(int *allIndexs) {
     float invWidth = 1.f / imageWidth * widthEachPiece;
     float invHeight = 1.f / imageHeight * heightEachPiece;
     // 新的地址空间合集
+    // int** newMemoryToPiece = cuConstRendererParams.newMemoryToPiece;s
 
     float boxB = invHeight * pieceMinY;
     // 遍历像素块
@@ -862,16 +861,16 @@ void addIndexToNewMemory(int *allIndexs) {
         for (int pieceX = pieceMinX; pieceX < pieceMaxX; pieceX++, pieceIndex++, boxL += invWidth) {
             if (circleInBox(p.x, p.y, rad, boxL, boxL + invWidth, boxB + invHeight, boxB)) {
                 int* val = &cuConstRendererParams.numElementInPieceCurrent[pieceIndex];
-                int priorNum = cuConstRendererParams.prefixSum[pieceIndex];
+                int priorNum = cuConstRendererParams.numElementInPiece[pieceIndex];
                 // 修改部分
                 int d = atomicAdd(val, 1);
-                allIndexs[priorNum + d] = index;
+                newMemoryToPiece[d + priorNum] = index;
             }
         }
     }
 }
 __global__
-void sortPerPiece(int *allIndexs) {
+void sortPerPiece(int *newMemoryToPiece) {
     int index = threadIdx.x + blockDim.x * blockIdx.x;
     int numPieceWidth = cuConstRendererParams.numPieceWidth;
     int numPieceHeight = cuConstRendererParams.numPieceHeight;
@@ -880,8 +879,8 @@ void sortPerPiece(int *allIndexs) {
     }
     // 获取地址
     int total = cuConstRendererParams.numElementInPieceCurrent[index];
-    int priorNum = cuConstRendererParams.prefixSum[index];
-    allIndexs += priorNum;
+    int priorNum = cuConstRendererParams.numElementInPiece[index];
+    int *arr = newMemoryToPiece + priorNum;
     // 特判，会出现一个地方的空间为 0 的情况;
     if (total <= 0) {
         return;
@@ -896,20 +895,20 @@ void sortPerPiece(int *allIndexs) {
             if (sonL >= total) {
                 break;
             }
-            if (sonR >= total || allIndexs[sonL] >= allIndexs[sonR]) {
-                if (allIndexs[root] < allIndexs[sonL]) {
-                    sonR = allIndexs[sonL];
-                    allIndexs[sonL] = allIndexs[root];
-                    allIndexs[root] = sonR;
+            if (sonR >= total || arr[sonL] >= arr[sonR]) {
+                if (arr[root] < arr[sonL]) {
+                    sonR = arr[sonL];
+                    arr[sonL] = arr[root];
+                    arr[root] = sonR;
                     root = sonL;
                 } else {
                     break;
                 }
             } else {
-                if (allIndexs[root] < allIndexs[sonR]) {
-                    sonL = allIndexs[sonR];
-                    allIndexs[sonR] = allIndexs[root];
-                    allIndexs[root] = sonL;
+                if (arr[root] < arr[sonR]) {
+                    sonL = arr[sonR];
+                    arr[sonR] = arr[root];
+                    arr[root] = sonL;
                     root = sonR;
                 } else {
                     break;
@@ -919,9 +918,9 @@ void sortPerPiece(int *allIndexs) {
     }
 
     while(--total) {
-        int root = allIndexs[0];
-        allIndexs[0] = allIndexs[total];
-        allIndexs[total] = root;
+        int root = arr[0];
+        arr[0] = arr[total];
+        arr[total] = root;
         root = 0;
         while(true) {
             int sonL = (root << 1) + 1;
@@ -929,20 +928,20 @@ void sortPerPiece(int *allIndexs) {
             if (sonL >= total) {
                 break;
             }
-            if (sonR >= total || allIndexs[sonL] >= allIndexs[sonR]) {
-                if (allIndexs[root] < allIndexs[sonL]) {
-                    sonR = allIndexs[sonL];
-                    allIndexs[sonL] = allIndexs[root];
-                    allIndexs[root] = sonR;
+            if (sonR >= total || arr[sonL] >= arr[sonR]) {
+                if (arr[root] < arr[sonL]) {
+                    sonR = arr[sonL];
+                    arr[sonL] = arr[root];
+                    arr[root] = sonR;
                     root = sonL;
                 } else {
                     break;
                 }
             } else {
-                if (allIndexs[root] < allIndexs[sonR]) {
-                    sonL = allIndexs[sonR];
-                    allIndexs[sonR] = allIndexs[root];
-                    allIndexs[root] = sonL;
+                if (arr[root] < arr[sonR]) {
+                    sonL = arr[sonR];
+                    arr[sonR] = arr[root];
+                    arr[root] = sonL;
                     root = sonR;
                 } else {
                     break;
@@ -950,8 +949,14 @@ void sortPerPiece(int *allIndexs) {
             }
         }
     }
+    // for (int i = 1;i < cuConstRendererParams.numElementInPiece[index];i++) {
+    //     if (arr[i - 1] >= arr[i]) {
+    //         printf("arr[%d - 1] >= arr[%d], arr[i - 1] = %d, arr[i] = %d\n", i, i, arr[i - 1], arr[i]);
+    //     }
+    //     assert(arr[i - 1] < arr[i]);
+    // }
 }
-__global__ void kernelRenderPixel(int *allIndexs) {
+__global__ void kernelRenderPixel(int *newMemoryToPiece) {
     int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
     int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
     int imageWidth = cuConstRendererParams.imageWidth;
@@ -966,11 +971,11 @@ __global__ void kernelRenderPixel(int *allIndexs) {
 
     int pieceIndex = pieceX + pieceY * cuConstRendererParams.numPieceWidth;
     int numCircle = cuConstRendererParams.numElementInPieceCurrent[pieceIndex];
-    int priorNum = cuConstRendererParams.prefixSum[pieceIndex];
-    allIndexs += priorNum;
+    int priorNum = cuConstRendererParams.numElementInPiece[pieceIndex];
+    newMemoryToPiece += priorNum;
 
     for (int i = 0; i < numCircle; i++) {
-        int index = allIndexs[i];
+        int index = newMemoryToPiece[i];
         int index3 = 3 * index;
         // read position and radius
         float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
@@ -987,78 +992,75 @@ __global__ void kernelRenderPixel(int *allIndexs) {
 void
 CudaRenderer::render() {
     cudaError_t cudaStatus;
-    double startTime, endTime;
+    // double startTime, endTime;
     int numPiece = numPieceWidth * numPieceHeight;
     // 将整个图片分块进行(块数不能太小，否则需要更改kernelRenderPixel函数相关的调用)
-    printf("---------------------------------------------\n");
-    printf("CudaRenderer::render start\n");
-    printf("numCircles: %d \n", numCircles);
-    printf("图片将分成 %d * %d 块\n", numPieceWidth, numPieceHeight);
-    printf("每块包含 %d * %d 个像素点\n", widthPerPiece, heightPerPiece);
+    // printf("---------------------------------------------\n");
+    // printf("CudaRenderer::render start\n");
+    // printf("图片将分成 %d * %d 块\n", numPieceWidth, numPieceHeight);
+    // printf("每块包含 %d * %d 个像素点\n", widthPerPiece, heightPerPiece);
 
     // 圆并行
-    printf("---------------------------------------------\n");
-    printf("求每个块与之对应的圆的数量(numCircleInPiece)\n");
+    // printf("---------------------------------------------\n");
+    // printf("求每个块与之对应的圆的数量(numCircleInPiece)\n");
     dim3 blockDimCircle(256, 1);
     dim3 gridDimCircle((numCircles + blockDimCircle.x - 1) / blockDimCircle.x);
-    printf("gridDimCircle: %d, blockDimCircle: %d\n", gridDimCircle.x, blockDimCircle.x);
-    startTime = CycleTimer::currentSeconds();
+    // printf("gridDimCircle: %d, blockDimCircle: %d\n", gridDimCircle.x, blockDimCircle.x);
+    // startTime = CycleTimer::currentSeconds();
     numCircleInPiece<<<gridDimCircle, blockDimCircle>>>();
     cudaDeviceSynchronize();
-    endTime = CycleTimer::currentSeconds();
-    printf("numCirclePiece final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
+    // endTime = CycleTimer::currentSeconds();
+    // printf("numCirclePiece final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
 
     // 根据结果开辟空间
-    printf("---------------------------------------------\n");
-    printf("申请新空间(mallocNewMemory)\n");
-    startTime = CycleTimer::currentSeconds();
-    int newMemorySize = exclusive_scan(cudaDeviceElementInPiece, numPiece, cudaDevicePrefixSum);
-    printf("newMemorySize: %d\n", newMemorySize);
-    int* allIndexs;
-    cudaStatus = cudaMalloc((void**)&allIndexs, sizeof(int) * newMemorySize);
+    // printf("---------------------------------------------\n");
+    // printf("申请新空间(mallocNewMemory)\n");
+    // startTime = CycleTimer::currentSeconds();
+    int newMemorySize = exclusive_scan(numPiece, cudaDeviceElementInPiece);
+    cudaStatus = cudaMalloc((void**)&cudaDeviceNewMemoryToPiece, sizeof(int) * newMemorySize);
     if (cudaStatus != cudaSuccess) 
         printf("mallocNewMemory cudaMalloc error: %d\n", cudaStatus);
-
-    endTime = CycleTimer::currentSeconds();
-    printf("mallocNewMemory final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
+    
+    // endTime = CycleTimer::currentSeconds();
+    // printf("mallocNewMemory final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
 
     // 二次圆并行
-    printf("---------------------------------------------\n");
-    printf("将圆的ID添加至新申请的空间(addIndexToNewMemory)\n");
-    printf("gridDimCircle: %d, blockDimCircle: %d\n", gridDimCircle.x, blockDimCircle.x);
-    startTime = CycleTimer::currentSeconds();
-    addIndexToNewMemory<<<gridDimCircle, blockDimCircle>>>(allIndexs);
+    // printf("---------------------------------------------\n");
+    // printf("将圆的ID添加至新申请的空间(addIndexToNewMemory)\n");
+    // printf("gridDimCircle: %d, blockDimCircle: %d\n", gridDimCircle.x, blockDimCircle.x);
+    // startTime = CycleTimer::currentSeconds();
+    addIndexToNewMemory<<<gridDimCircle, blockDimCircle>>>(cudaDeviceNewMemoryToPiece);
     cudaDeviceSynchronize();
-    endTime = CycleTimer::currentSeconds();
-    printf("addIndexToNewMemory final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
+    // endTime = CycleTimer::currentSeconds();
+    // printf("addIndexToNewMemory final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
 
     // 块并行排序
-    printf("---------------------------------------------\n");
-    printf("每个块对圆id排序(sortPerPiece)\n");
+    // printf("---------------------------------------------\n");
+    // printf("每个块对圆id排序(sortPerPiece)\n");
     dim3 blockDimPiece(std::min(256, numPiece), 1);
     dim3 gridDimPiece((numPiece + blockDimPiece.x - 1) / blockDimPiece.x);
-    printf("gridDimPiece: %d, blockDimPiece: %d\n", gridDimPiece.x, blockDimPiece.x);
-    startTime = CycleTimer::currentSeconds();
-    sortPerPiece<<<blockDimPiece, gridDimPiece>>>(allIndexs);
+    // printf("gridDimPiece: %d, blockDimPiece: %d\n", gridDimPiece.x, blockDimPiece.x);
+    // startTime = CycleTimer::currentSeconds();
+    sortPerPiece<<<blockDimPiece, gridDimPiece>>>(cudaDeviceNewMemoryToPiece);
     cudaDeviceSynchronize();
-    endTime = CycleTimer::currentSeconds();
-    printf("sortPerPiece final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
+    // endTime = CycleTimer::currentSeconds();
+    // printf("sortPerPiece final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
 
     // 像素并行计算
-    printf("---------------------------------------------\n");
-    printf("开始像素并行计算\n");
-    dim3 blockDimPixel(std::min(widthPerPiece, 8), std::min(heightPerPiece, 8));
+    // printf("---------------------------------------------\n");
+    // printf("开始像素并行计算\n");
+    dim3 blockDimPixel(std::min(widthPerPiece, 16), std::min(heightPerPiece, 16));
     dim3 gridDimPixel((image->width + blockDimPixel.x - 1) / blockDimPixel.x, 
                       (image->height + blockDimPixel.y - 1) / blockDimPixel.y);
-    printf("gridDimPixel.x: %d, blockDimPixel.x: %d\n", gridDimPixel.x, blockDimPixel.x);
-    printf("gridDimPixel.y: %d, blockDimPixel.y: %d\n", gridDimPixel.y, blockDimPixel.y);
-    startTime = CycleTimer::currentSeconds();
-    kernelRenderPixel<<<gridDimPixel, blockDimPixel>>>(allIndexs);
+    // printf("gridDimPixel.x: %d, blockDimPixel.x: %d\n", gridDimPixel.x, blockDimPixel.x);
+    // printf("gridDimPixel.y: %d, blockDimPixel.y: %d\n", gridDimPixel.y, blockDimPixel.y);
+    // startTime = CycleTimer::currentSeconds();
+    kernelRenderPixel<<<gridDimPixel, blockDimPixel>>>(cudaDeviceNewMemoryToPiece);
     cudaDeviceSynchronize();
-    endTime = CycleTimer::currentSeconds();
-    printf("kernelRenderPixel final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
-    printf("---------------------------------------------\n");
+    // endTime = CycleTimer::currentSeconds();
+    // printf("kernelRenderPixel final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
+    // printf("---------------------------------------------\n");
     // 记得释放空间
-    // cudaFree(allIndexs);
+    // cudaFree(cudaDeviceNewMemoryToPiece);
 }
 

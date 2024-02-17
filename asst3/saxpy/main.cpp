@@ -17,7 +17,6 @@ void usage(const char* progname) {
 
 int main(int argc, char** argv)
 {
-
     // default: arrays of 100M numbers
     int N = 100 * 1000 * 1000;
 
