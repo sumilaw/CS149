@@ -1059,6 +1059,6 @@ CudaRenderer::render() {
     printf("kernelRenderPixel final, run time: %.3f ms\n", 1000.f * (endTime - startTime));
     printf("---------------------------------------------\n");
     // 记得释放空间
-    // cudaFree(allIndexs);
+    cudaFree(allIndexs);
 }
 
